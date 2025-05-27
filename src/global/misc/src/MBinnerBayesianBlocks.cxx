@@ -20,10 +20,14 @@
 #include "MBinnerBayesianBlocks.h"
 
 // Standard libs:
+#include <cmath>
+#include <algorithm>
+#include <sstream> // For using ostringstream
 
 // ROOT libs:
 
 // MEGAlib libs:
+#include "MGlobal.h"
 
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -56,10 +60,11 @@ MBinnerBayesianBlocks::~MBinnerBayesianBlocks()
 
 
 void Print(vector<double>& Array) {
+  std::ostringstream oss;
   for (unsigned int i = 0; i < Array.size(); ++i) {
-    cout<<Array[i]<<" ";
+    oss << Array[i] << " ";
   }
-  cout<<endl;
+  MGlobal::msg(MGlobal::DEB) << "MBinnerBayesianBlocks::Print(double): " << oss.str() << Gendl;
 }
 
 
@@ -67,10 +72,11 @@ void Print(vector<double>& Array) {
 
 
 void Print(vector<int>& Array) {
+  std::ostringstream oss;
   for (unsigned int i = 0; i < Array.size(); ++i) {
-    cout<<Array[i]<<" ";
+    oss << Array[i] << " ";
   }
-  cout<<endl;
+  MGlobal::msg(MGlobal::DEB) << "MBinnerBayesianBlocks::Print(int): " << oss.str() << Gendl;
 }
 
 
@@ -134,7 +140,7 @@ void MBinnerBayesianBlocks::Histogram()
   vector<float> CountsPerBin(Size, 0);
   for (list<MBinnedData>::iterator I = m_Values.begin(); I != m_Values.end(); ++I) {
     double Value = (*I).m_AxisValue;
-    for (unsigned int e = 0; e < Edges.size() - 1; ++e) { // Speed improvement possible
+    for (unsigned int e = 0; e < Edges.size() - 1; ++e) { // Speed improvement possible: Since m_Values and Edges are sorted, a linear scan (merge-like) approach (O(N_values + N_edges)) can be used instead of this O(N_values * N_edges) nested loop.
       if (Edges[e] <= Value && Edges[e+1] > Value) {
         CountsPerBin[e] += (*I).m_DataValue;
         break;     
@@ -160,11 +166,11 @@ void MBinnerBayesianBlocks::Histogram()
     //Print(Width);
     
     // Calculate the block count
-    vector<float> BlockCounts(s+1, 0); // log(float) is the fastest of the log calculations
-    int LastCounts = 0;
-    for (unsigned int i = s; i <= s; --i) {
-      BlockCounts[i] = LastCounts + CountsPerBin[i];
-      LastCounts = BlockCounts[i];
+    vector<float> BlockCounts(s + 1, 0);
+    float current_sum = 0;
+    for (int k = s; k >= 0; --k) { // Iterate downwards from s to 0
+      current_sum += CountsPerBin[k];
+      BlockCounts[k] = current_sum;
     }
     //cout<<"BlockCounts: "<<endl;
     //Print(BlockCounts);
@@ -172,7 +178,19 @@ void MBinnerBayesianBlocks::Histogram()
     //
     vector<float> Fits;
     for (unsigned int i = 0; i <= s; ++i) {
-      float Fit = BlockCounts[i] * (log(BlockCounts[i]) - log(Width[i]));
+      float Fit;
+      if (Width[i] <= 0) {
+        Fit = -1.0e38f; // A very large negative number
+      } else {
+        if (BlockCounts[i] == 0) {
+          // N log N term is 0. The formula is N (log N - log W) = N log N - N log W.
+          // So if N=0, this becomes 0 - 0 * log W = 0.
+          Fit = 0.0f;
+        } else {
+          // Both BlockCounts[i] and Width[i] are positive
+          Fit = BlockCounts[i] * (logf(BlockCounts[i]) - logf(Width[i]));
+        }
+      }
       Fit -= m_Prior;
       Fits.push_back(Fit);
     }
@@ -193,51 +211,60 @@ void MBinnerBayesianBlocks::Histogram()
   }
   
   // Scargle's implementation breaks when Size == 1
-  // Step 6: Find the change points:
-  vector<unsigned int> ChangePoints(Size, 0);
-  unsigned int ChangePointsIndex = Size;
-  unsigned int CurrentIndex = Size;
-  
-  while (true) {
-    if (ChangePointsIndex == 0) {
-      cout<<"Error: Something went wrong with the change points during Baysian Block binning... We had to stop before fully done."<<endl;
-      break;
-    }
-    ChangePointsIndex -= 1;
-    ChangePoints[ChangePointsIndex] = CurrentIndex;
-    if (CurrentIndex == 0) {
-      break;
-    }
-    CurrentIndex = Last[CurrentIndex - 1];
-  }
-  
+  // Step 6: Find the change points
+  std::vector<unsigned int> GeneratedChangePoints;
+  unsigned int CurrentCPIndex = Size; // 'Size' is the number of cells, cell indices 0 to Size-1. Edges indices 0 to Size.
 
-  /*
-  // Step 6: Find the change points:
-  vector<unsigned int> ChangePoints(Size, 0);
-  unsigned int ChangePointsIndex = 0;
-  unsigned int CurrentIndex = Size;
-  
-  while (true) {
-    if (ChangePointsIndex == 0) {
-      cout<<"Error: Something went wrong with the change points during Baysian Block binning... We had to stop before fully done."<<endl;
-      break;
-    }
-    ChangePointsIndex -= 1;
-    ChangePoints[ChangePointsIndex] = CurrentIndex;
-    if (CurrentIndex == 0) {
-      break;
-    }
-    CurrentIndex = Last[CurrentIndex - 1];
-  */
-  
-  //cout<<"All Change points: "<<endl;
-  //Print(ChangePoints);
-  //cout<<"Minimum index: "<<ChangePointsIndex<<endl;
-  
-  for (unsigned int i = ChangePointsIndex; i < Size; ++i) {
-    m_BinEdges.push_back(Edges[ChangePoints[i]]);
-  }  
+  while (CurrentCPIndex > 0) {
+      GeneratedChangePoints.push_back(CurrentCPIndex);
+
+      // 'Last' has 'Size' elements, valid indices 0 to Size-1.
+      // CurrentCPIndex ranges from 'Size' down to 1.
+      // So, CurrentCPIndex - 1 ranges from 'Size - 1' down to 0, which is a valid index for 'Last'.
+      unsigned int PrevCPIndex = Last[CurrentCPIndex - 1];
+
+      if (PrevCPIndex >= CurrentCPIndex) {
+          MGlobal::msg(MGlobal::ERR) << "Bayesian Blocks change point reconstruction failed. Index did not decrease: Current=" << CurrentCPIndex << ", Previous=" << PrevCPIndex << Gendl;
+          GeneratedChangePoints.clear(); // Invalidate results
+          break;
+      }
+      CurrentCPIndex = PrevCPIndex;
+  }
+
+  if (CurrentCPIndex == 0) {
+      GeneratedChangePoints.push_back(0); // Add the starting point (index 0 for Edges array)
+  } else {
+      // This block is reached if the loop broke prematurely due to an error (e.g., PrevCPIndex >= CurrentCPIndex)
+      // or if Size was initially 0 and the loop didn't run (CurrentCPIndex remains 0, so this else is skipped).
+      if (!GeneratedChangePoints.empty()) { // Implies an error occurred and we broke from the loop
+          MGlobal::msg(MGlobal::ERR) << "Something went wrong with the change points during Bayesian Block binning. Path to 0 not found." << Gendl;
+      }
+      // If GeneratedChangePoints is empty here AND Size > 0, it means the error happened on the first try.
+      // If Size was 0, CurrentCPIndex starts as 0, loop is skipped, CurrentCPIndex == 0 is true, {0} is added.
+  }
+
+  std::reverse(GeneratedChangePoints.begin(), GeneratedChangePoints.end());
+
+  m_BinEdges.clear();
+
+  if (GeneratedChangePoints.empty() && Size > 0) {
+      MGlobal::msg(MGlobal::WAR) << "No change points were generated by Bayesian Blocks for Size = " << Size << ". Resulting binning may be trivial." << Gendl;
+      // As a fallback, one might consider adding Edges[0] and Edges[Size] if Edges is not empty and Size > 0
+      // if (Edges.size() > Size && Size > 0) { // Edges should have Size+1 elements
+      //    m_BinEdges.push_back(Edges[0]);
+      //    m_BinEdges.push_back(Edges[Size]);
+      // }
+  }
+
+  for (unsigned int PointIndex : GeneratedChangePoints) {
+      if (PointIndex < Edges.size()) { // Edges contains original cell boundaries. PointIndex is an index for Edges.
+          m_BinEdges.push_back(Edges[PointIndex]);
+      } else {
+          MGlobal::msg(MGlobal::ERR) << "Change point index " << PointIndex << " is out of bounds for Edges vector (size " << Edges.size() << ")." << Gendl;
+          m_BinEdges.clear(); // Critical error, invalidate m_BinEdges
+          break;
+      }
+  }
   
   // Step 7: Do some sanity checks:
   if (m_UseBinning == false) {
@@ -250,11 +277,9 @@ void MBinnerBayesianBlocks::Histogram()
             m_BinEdges.erase(m_BinEdges.begin()+i);
             i--;
           } else if (i == m_BinEdges.size() - 1) {
-            m_BinEdges.erase(m_BinEdges.end()-2);
-            break;
-          } else {
-            m_BinEdges[i-1] = 0.5*(m_BinEdges[i-1] + m_BinEdges[i]);
-            cout<<"New: "<<m_BinEdges[i-1]<<endl;
+            m_BinEdges.erase(m_BinEdges.begin() + i - 1); // Corrected to use m_BinEdges.begin() for clarity, same as m_BinEdges.end()-2
+            i--;
+          } else { // An intermediate bin is too small, merge with right neighbor
             m_BinEdges.erase(m_BinEdges.begin()+i);
             i--;
           }
