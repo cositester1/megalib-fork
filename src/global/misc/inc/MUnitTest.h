@@ -17,16 +17,14 @@
 
 
 // Standard libs:
-#include <vector>
-using namespace std;
-
-// ROOT libs:
+#include <vector> 
 
 // MEGAlib libs:
 #include "MGlobal.h"
-#include "MUnitTest.h"
+#include "MStreams.h" 
+#include "MString.h"  
 
-// Forward declarations:
+using namespace std; 
 
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -35,66 +33,43 @@ using namespace std;
 //! The base class for unit test
 class MUnitTest
 {
-  // public interface:
- public:
-  //! Default constructor
+public:
   MUnitTest();
-  //! Default destuctor 
   virtual ~MUnitTest();
   
-  //! Evaluate the success of this test run
   template <typename T1, typename T2> bool Evaluate(MString Function, T1 Input, MString Description, T2 Output, T2 Truth)
   {
     if (Output != Truth) {
-      cout<<endl;
-      cout<<"FAILED: "<<Function<<"  <-- "<<Input<<endl;
-      cout<<"   Description: "<<Description<<endl;
-      cout<<"   Expected:    "<<Truth<<endl;
-      cout<<"   Output:      "<<Output<<endl;
-      cout<<endl;
-      
+      mlog(MStreams::ERR)<<"FAILED: "<<Function<<"  <-- "<<Input<<Endl;
+      mlog(MStreams::ERR)<<"   Description: "<<Description<<Endl;
+      mlog(MStreams::ERR)<<"   Expected:    "<<Truth<<Endl;
+      mlog(MStreams::ERR)<<"   Output:      "<<Output<<Endl;
       ++m_NumberOfFailedTests;
       return false;
     }
-    
-    ++ m_NumberOfPassedTests;
+    ++m_NumberOfPassedTests;
     return true;
   }
-  
-  //! Run the unit test
+
+  // Declaration only:
+  bool Evaluate(MString TestName, bool Condition, MString FailureDescription);
+
+  // Declaration only:
+  bool Evaluate(MString TestName, const vector<double>& Output, const vector<double>& Truth, MString Description, double Tolerance = 1e-6);
+
   virtual bool Run() = 0;
-  
-  //! Summarize the test run
   void Summarize();
+
+  unsigned int GetNumberOfFailedTests() const { return m_NumberOfFailedTests; }
+  unsigned int GetNumberOfPassedTests() const { return m_NumberOfPassedTests; }
   
-  // protected methods:
- protected:
-
-  // private methods:
- private:
-
-
-
-  // protected members:
- protected:
-
-
-  // private members:
- private:
-   //! Passed tests
+private:
    unsigned int m_NumberOfPassedTests;
-   //! Failed tests
    unsigned int m_NumberOfFailedTests;
-
 
 #ifdef ___CLING___
  public:
-  ClassDef(MUnitTest, 1)
+  ClassDef(MUnitTest, 1) 
 #endif
-
 };
-
 #endif
-
-
-////////////////////////////////////////////////////////////////////////////////
