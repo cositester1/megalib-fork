@@ -85,6 +85,13 @@ confhelp() {
   echo "--help or -h"
   echo "    Show this help."
   echo " "
+  echo "--distcc-hosts=[host_list]"
+  echo "    Specify a comma-separated or space-separated list of hosts for distributed compilation of ROOT using distcc."
+  echo "    Example: --distcc-hosts=\"localhost/4 host1/8 192.168.1.100/4\""
+  echo "    The script will set the DISTCC_HOSTS environment variable based on this input for the ROOT build process."
+  echo "    Note: distcc must be installed and configured on the local machine and all specified remote hosts."
+  echo "    Remote hosts must be running the distccd daemon. Ensure compilers are compatible across hosts."
+  echo " "
   echo " "
 }
 
@@ -181,6 +188,7 @@ UPDATES="off"
 PATCH="on"
 CLEANUP="off"
 BRANCH=""
+DISTCC_HOSTS_CONFIG="" # Added for distcc hosts
 # ALLOWROOT="off" - initialized in the beginning not here
 
 MAXTHREADS=1;
@@ -267,6 +275,8 @@ for C in "${CMD[@]}"; do
   elif [[ ${C} == *--allowroot* ]]; then
     # Handled above too
     ALLOWROOT="on"
+  elif [[ ${C} == *--distcc-hosts*=* ]]; then
+    DISTCC_HOSTS_CONFIG=`echo ${C} | awk -F"=" '{ print $2 }'`
   elif [[ ${C} == *-h ]] || [[ ${C} == *-hel* ]]; then
     echo ""
     confhelp
@@ -302,6 +312,17 @@ if [[ "${HERE}" != "${HERE% *}" ]]; then
   echo "ERROR: The installation directory needs to be a path without spaces,"
   echo "       but you chose: \"${HERE}\""
   exit 1
+fi
+
+# Feedback for distcc hosts and export DISTCC_HOSTS
+if [ "${DISTCC_HOSTS_CONFIG}" != "" ]; then
+  echo " * Using these hosts for distcc: ${DISTCC_HOSTS_CONFIG}"
+  # Export DISTCC_HOSTS so it's available to child scripts like build-root.sh
+  export DISTCC_HOSTS="${DISTCC_HOSTS_CONFIG}"
+else
+  echo " * Not using distcc (no hosts specified with --distcc-hosts). DISTCC_HOSTS environment variable not set by setup.sh."
+  # If DISTCC_HOSTS was already set in the environment, this script won't unset it.
+  # build-root.sh will check for DISTCC_HOSTS itself.
 fi
 
 
@@ -971,10 +992,11 @@ mv ${ENVFILE} bin/source-megalib.sh
 
 echo "Storing last good options..."
 rm -f ${MEGALIBDIR}/config/SetupOptions.txt
-SETUP="--external-path=${EXTERNALPATH} --root=${ROOTPATH} --geant4=${GEANT4PATH} --release=${RELEASE} --repository=${REPOSITORY} --optimization=${OPT} --debug=${DEBUG} --updates=${UPDATES} --patch=${PATCH} --cleanup=${CLEANUP} --keepmegalibasis=${KEEPMEGALIBASIS} --keepenvironmentasis=${KEEPENVASIS} --maxthreads=${MAXTHREADS}"
+SETUP="--external-path=${EXTERNALPATH} --root=${ROOTPATH} --geant4=${GEANT4PATH} --release=${RELEASE} --repository=${REPOSITORY} --optimization=${OPT} --debug=${DEBUG} --updates=${UPDATES} --patch=${PATCH} --cleanup=${CLEANUP} --keepmegalibasis=${KEEPMEGALIBASIS} --keepenvironmentasis=${KEEPENVASIS} --maxthreads=${MAXTHREADS} --distcc-hosts=${DISTCC_HOSTS_CONFIG}"
 if [[ ${BRANCH} != "" ]]; then
   SETUP+=" --branch=${BRANCH}"
 fi
+# Note: ALLOWROOT is intentionally not saved as it's a security-sensitive runtime flag.
 
 echo "${SETUP}" >> ${MEGALIBDIR}/config/SetupOptions.txt
 

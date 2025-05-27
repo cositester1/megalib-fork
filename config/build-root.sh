@@ -73,6 +73,44 @@ CONFIGUREOPTIONS+=" -Dalien=OFF -Dbonjour=OFF -Dcastor=OFF -Ddavix=OFF -Dfortran
 # Explictly add gcc -- cmake seems to sometimes digg up other compilers on the system, not the default one...
 # CONFIGUREOPTIONS+=" -DCMAKE_C_COMPILER=$(which gcc) -DCMAKE_CXX_COMPILER=$(which g++)"
 
+# distcc configuration
+DISTCC_ACTIVE=0
+# Check if distcc command is available
+if type distcc >/dev/null 2>&1; then
+  if [ -n "$DISTCC_HOSTS" ]; then
+    echo "INFO: distcc is available and DISTCC_HOSTS is set: $DISTCC_HOSTS"
+    # Verify distcc command works (e.g. by checking version)
+    if distcc --version >/dev/null 2>&1; then
+      # Use CMAKE_C_COMPILER_LAUNCHER and CMAKE_CXX_COMPILER_LAUNCHER for distcc
+      # This tells CMake to prepend "distcc" to the compiler command.
+      CONFIGUREOPTIONS+=" -DCMAKE_C_COMPILER_LAUNCHER=distcc -DCMAKE_CXX_COMPILER_LAUNCHER=distcc"
+      
+      # Explicitly set the C and CXX compilers that distcc will distribute.
+      # This ensures CMake uses the correct underlying compilers.
+      # We try to find gcc and g++ in the path.
+      if type gcc >/dev/null 2>&1 && type g++ >/dev/null 2>&1; then
+        CONFIGUREOPTIONS+=" -DCMAKE_C_COMPILER=$(which gcc) -DCMAKE_CXX_COMPILER=$(which g++)"
+        DISTCC_ACTIVE=1
+        echo "INFO: Using distcc for compilation with $(which gcc) and $(which g++)."
+      else
+        echo "WARNING: gcc or g++ not found in PATH. Cannot configure distcc properly."
+        echo "         Proceeding with local compilation settings."
+      fi
+    else
+      echo "WARNING: 'distcc --version' command failed. DISTCC_HOSTS might be misconfigured, or distcc daemons may not be running on hosts."
+      echo "         Proceeding with local compilation."
+    fi
+  else
+    echo "INFO: distcc is available, but DISTCC_HOSTS environment variable is not set."
+    echo "       To enable distributed compilation, please set DISTCC_HOSTS."
+    echo "       Example: export DISTCC_HOSTS='localhost host1 host2'"
+    echo "       Proceeding with local compilation."
+  fi
+else
+  # This case would be hit if distcc installation failed or was skipped.
+  echo "INFO: distcc is not installed or not found in PATH. Proceeding with local compilation."
+fi
+
 # The compiler
 COMPILEROPTIONS=`gcc --version | head -n 1`
 
@@ -101,6 +139,33 @@ type openssl >/dev/null 2>&1
 if [ $? -ne 0 ]; then
     echo "ERROR: openssl must be installed"
     exit 1
+fi
+
+# Check for distcc and install if necessary
+type distcc >/dev/null 2>&1
+if [ $? -ne 0 ]; then
+  echo "INFO: distcc not found. Attempting to install..."
+  # Attempt to install distcc using apt-get or yum
+  if type apt-get >/dev/null 2>&1; then
+    sudo apt-get update && sudo apt-get install -y distcc
+  elif type yum >/dev/null 2>&1; then
+    sudo yum install -y distcc
+  else
+    echo "ERROR: Cannot install distcc. No known package manager (apt-get, yum) found."
+    echo "       Please install distcc manually and re-run the script."
+    # We don't exit here, as the script should fall back to local compilation.
+    # The distcc configuration logic later will handle the case where distcc is not available.
+    echo "       Proceeding with local compilation setup."
+  fi
+  # Verify installation
+  type distcc >/dev/null 2>&1
+  if [ $? -ne 0 ]; then
+    echo "WARNING: distcc installation failed or distcc is still not in PATH. Will use local compilation."
+  else
+    echo "INFO: distcc installed successfully."
+  fi
+else
+  echo "INFO: distcc is already installed."
 fi
 
 
@@ -568,23 +633,72 @@ fi
 
 
 CORES=1;
-if [[ ${OSTYPE} == darwin* ]]; then
-  CORES=`sysctl -n hw.logicalcpu_max`
-elif [[ ${OSTYPE} == linux* ]]; then
-  CORES=`grep processor /proc/cpuinfo | wc -l`
+if [[ ${DISTCC_ACTIVE} -eq 1 ]]; then
+  echo "INFO: distcc is active. Attempting to determine number of jobs for distributed compilation."
+  # Try to get total slots from distcc -j, which is the most reliable method
+  DISTCC_JOBS_OUTPUT=$(distcc -j 2>/dev/null)
+  DISTCC_JOBS_STATUS=$?
+  
+  if [[ ${DISTCC_JOBS_STATUS} -eq 0 && -n "$DISTCC_JOBS_OUTPUT" && "$DISTCC_JOBS_OUTPUT" -gt 0 ]]; then
+    CORES=$((DISTCC_JOBS_OUTPUT)) # Ensure it's treated as a number
+    echo "INFO: Using $CORES jobs based on 'distcc -j' output."
+  else
+    # Fallback: count hosts in DISTCC_HOSTS and multiply by a default factor
+    echo "INFO: 'distcc -j' failed, returned zero, or non-numeric. Estimating jobs based on DISTCC_HOSTS."
+    NUM_HOSTS=$(echo $DISTCC_HOSTS | wc -w)
+    # Default cores per host, can be adjusted by user if needed via MAXTHREADS or directly in script
+    CORES_PER_HOST_ESTIMATE=4 
+    CORES=$((NUM_HOSTS * CORES_PER_HOST_ESTIMATE))
+    if [ "$CORES" -le 0 ]; then # Ensure CORES is at least 1
+        CORES=4 # Default to 4 if calculation is not fruitful
+        echo "INFO: Host count from DISTCC_HOSTS is zero or invalid. Defaulting to $CORES jobs for distcc."
+    else
+        echo "INFO: Estimated $CORES jobs for distcc ($NUM_HOSTS hosts * $CORES_PER_HOST_ESTIMATE cores/host estimate)."
+    fi
+  fi
+  
+  # With distcc, MAXTHREADS acts as an upper cap for the calculated distcc jobs.
+  # Users might set MAXTHREADS very high for distcc, or to a specific limit.
+  if [ "${CORES}" -gt "${MAXTHREADS}" ]; then
+    echo "INFO: Calculated distcc jobs ($CORES) exceed MAXTHREADS ($MAXTHREADS). Capping at MAXTHREADS."
+    CORES=${MAXTHREADS}
+  fi
+else
+  # Local compilation core count logic (original logic)
+  echo "INFO: distcc is not active. Using local compilation core count."
+  if [[ ${OSTYPE} == darwin* ]]; then
+    CORES=`sysctl -n hw.logicalcpu_max`
+  elif [[ ${OSTYPE} == linux* ]]; then
+    CORES=`grep processor /proc/cpuinfo | wc -l`
+  fi
+  if [ "$?" != "0" ] || [ -z "$CORES" ] || [ "$CORES" -le 0 ]; then # Check if CORES is empty or non-positive
+    CORES=1
+  fi
+  # For local compilation, MAXTHREADS is a strict limit on physical cores.
+  if [ "${CORES}" -gt "${MAXTHREADS}" ]; then
+    CORES=${MAXTHREADS}
+  fi
 fi
-if [ "$?" != "0" ]; then
-  CORES=1
+
+# Final check to ensure CORES is at least 1
+if [ "${CORES}" -le "0" ]; then
+    CORES=1
 fi
-if [ "${CORES}" -gt "${MAXTHREADS}" ]; then
-  CORES=${MAXTHREADS}
-fi
+
 echo "Using this number of cores for compilation: ${CORES}"
 
 
-
 echo "Compiling..."
-make -j${CORES}
+if [[ ${DISTCC_ACTIVE} -eq 1 ]]; then
+  # Prepending /usr/lib/distcc to PATH and setting CC/CXX for make can help ensure distcc is used
+  # by make, even if CMake picked up different compilers initially (though CMAKE_C_COMPILER_LAUNCHER should prevent this).
+  # This is a safeguard.
+  echo "INFO: Compiling with distcc using $CORES jobs. Overriding CC and CXX for make."
+  PATH="/usr/lib/distcc:$PATH" CC="distcc $(which gcc)" CXX="distcc $(which g++)" make -j${CORES}
+else
+  echo "INFO: Compiling locally using $CORES jobs."
+  make -j${CORES}
+fi
 if [ "$?" != "0" ]; then
   echo "ERROR: Something went wrong while compiling ROOT!"
   exit 1

@@ -3,3 +3,6 @@ https://megalibtoolkit.com/setup.html
 
 The html code of this webpage can also be found as a subfoder of this "doc" folder:
 webpages/content/setup.html
+
+For detailed information on speeding up the ROOT compilation process using distcc, please see:
+doc/DistributedCompilation.txt

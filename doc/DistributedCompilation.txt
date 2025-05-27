@@ -1,0 +1,88 @@
+# Using Distributed Compilation with distcc to Speed Up ROOT Build
+
+## Introduction
+
+`distcc` is a program that allows compilations to be distributed across several machines on a network. For large software projects like ROOT, which can take a significant amount of time to compile, `distcc` can dramatically speed up the build process by utilizing the processing power of multiple computers. This is particularly useful when building ROOT as part of the MEGAlib setup.
+
+## Prerequisites
+
+Before attempting to use `distcc` with the MEGAlib setup scripts, ensure the following prerequisites are met:
+
+*   **`distcc` on Local Machine**: `distcc` must be installed on the local machine where you run the `setup.sh` script. The `config/build-root.sh` script (called by `setup.sh`) will attempt to install `distcc` if it's not found, but it's best to ensure it's installed beforehand.
+*   **`distcc` and Compilers on Remote Hosts**: Each remote machine intended to participate in the compilation must have `distcc` installed. Additionally, a compatible C/C++ compiler (typically the same version of gcc/g++ as on the local machine) must be installed on these remote hosts.
+*   **Network Connectivity**: The local machine must be able to reach the remote compilation hosts over the network on the `distcc` port (default TCP port 3632). Check firewall configurations on all machines to ensure traffic on this port is allowed.
+*   **`distccd` Daemon**: The `distccd` daemon must be running on all remote compilation hosts. It should also be configured to allow connections from the local machine (e.g., using the `--allow` option when starting `distccd`).
+*   **Compiler Version Consistency**: It is highly recommended that all machines (the local client and all remote servers) use the same version of the C/C++ compiler. Mismatched compiler versions can lead to compilation errors or unexpected behavior.
+*   **SSH Access (Recommended for Setup/Troubleshooting)**: While `distcc` itself typically uses TCP for communication once `distccd` is running, having SSH access to the remote hosts is often necessary for initial setup (installing `distcc`, starting `distccd`) and for troubleshooting.
+
+## Configuration
+
+You can specify the compilation hosts for `distcc` in two main ways when using the MEGAlib setup:
+
+1.  **Using the `--distcc-hosts` option in `setup.sh`**:
+    *   The `setup.sh` script accepts a `--distcc-hosts` option to define the list of participating `distcc` servers.
+    *   The format is a comma-separated or space-separated list of host specifications.
+    *   Example: `./setup.sh --distcc-hosts="localhost/4 server1/8 192.168.1.102/4"`
+    *   When this option is used, `setup.sh` will export the `DISTCC_HOSTS` environment variable, which will then be used by the `config/build-root.sh` script during ROOT compilation.
+    *   This setting is saved in `config/SetupOptions.txt` within your MEGAlib path and will be automatically loaded in subsequent runs of `setup.sh`.
+
+2.  **Setting the `DISTCC_HOSTS` Environment Variable Directly**:
+    *   If the `--distcc-hosts` option is not provided to `setup.sh`, the `config/build-root.sh` script will still check if the `DISTCC_HOSTS` environment variable is already set in your shell.
+    *   You can set this variable manually before running `setup.sh`.
+    *   Example (bash): `export DISTCC_HOSTS="localhost/4 server1/8 192.168.1.102/4"`
+    *   This method is useful if you prefer to manage `DISTCC_HOSTS` outside the MEGAlib setup options.
+
+**Host Specification Format**:
+*   Hosts can be specified by hostname (e.g., `server1`), IP address (e.g., `192.168.1.102`).
+*   You can optionally append `/limit` to a host to specify the maximum number of jobs that host should accept (e.g., `server1/8`).
+*   For more advanced configurations, such as different compiler paths on hosts or using SSH for connections (less common for TCP mode), consult the official `distcc` documentation (e.g., the `distcc-hosts(1)` man page).
+
+## Usage
+
+Once `distcc` is configured (either via the `--distcc-hosts` option or by setting the `DISTCC_HOSTS` environment variable), the MEGAlib setup process will automatically attempt to use it when compiling ROOT.
+
+*   The `config/build-root.sh` script checks for the `distcc` command and the `DISTCC_HOSTS` variable.
+*   If both are present and valid, it configures the ROOT build (CMake) to use `distcc` as a compiler launcher.
+*   The number of parallel compilation jobs (`make -jN`) is also adjusted. It attempts to use `distcc -j` to get the total number of available slots on the `distcc` network. If that fails, it estimates based on the number of hosts in `DISTCC_HOSTS`.
+*   If `distcc` is not found, or `DISTCC_HOSTS` is not set or empty, the script will gracefully fall back to a standard local compilation.
+
+## Monitoring and Troubleshooting
+
+To verify that `distcc` is working and to troubleshoot issues:
+
+*   **Monitoring**: Use `distccmon-text` in your terminal (or GUI monitors like `distccmon-gnome`) while `setup.sh` is compiling ROOT. This tool shows a list of configured hosts and the jobs they are processing in real-time.
+*   **Common Issues**:
+    *   **Firewall**: Ensure the `distcc` port (default TCP 3632) is open on the local machine and all remote hosts.
+    *   **Mismatched Compilers**: Errors during compilation, often related to unknown compiler flags or different header versions, can indicate mismatched compiler versions. Ensure all hosts use the same compiler version.
+    *   **Incorrect `DISTCC_HOSTS`**: Double-check hostnames, IP addresses, and syntax in your `DISTCC_HOSTS` list.
+    *   **`distccd` Not Running/Configured**: Verify that `distccd` is running on all remote hosts and that it's configured to allow connections from your local machine's IP address or network range. Check the `distccd` logs on the remote servers for connection attempts or errors.
+    *   **Path Issues**: Ensure `distcc` can find the actual compilers (gcc, g++) in the PATH on the remote machines. Sometimes `distccd` needs to be started with specific PATH environment or options if compilers are in non-standard locations.
+
+*   **Official Documentation**: For detailed troubleshooting and advanced configurations, always refer to the official `distcc` documentation and man pages (`distcc(1)`, `distccd(1)`, `distcc-hosts(1)`).
+
+## Example Workflow
+
+1.  **Install `distcc`**:
+    *   On your local machine: `sudo apt-get install distcc` (or equivalent for your distribution).
+    *   On each remote server (e.g., `remote_server1`, `remote_server2`): `sudo apt-get install distcc`. Ensure `gcc`/`g++` are also installed and are the same version as on the local machine.
+
+2.  **Configure and Start `distccd` on Remote Servers**:
+    *   Edit the `distccd` configuration file (often in `/etc/default/distcc` or `/etc/distcc/`) or start `distccd` manually.
+    *   Ensure it's listening on the network (e.g., `0.0.0.0:3632`) and allowed to serve requests from your local machine's IP or network.
+    *   Example command to start `distccd` (adjust based on your system): `distccd --daemon --allow 192.168.1.0/24 --log-level info --log-file /var/log/distccd.log`
+    *   Verify `distccd` is running: `ps aux | grep distccd`.
+
+3.  **Run MEGAlib Setup Script**:
+    *   From your local machine, navigate to the directory containing `setup.sh`.
+    *   Execute `setup.sh` with the `--distcc-hosts` option:
+        `./setup.sh --distcc-hosts="localhost/2 remote_server1/4 remote_server2/8"`
+    *   Alternatively, set the environment variable first:
+        `export DISTCC_HOSTS="localhost/2 remote_server1/4 remote_server2/8"`
+        `./setup.sh`
+
+4.  **Monitor Compilation**:
+    *   While ROOT is compiling (this step can take a while), open another terminal and run `distccmon-text`.
+    *   Observe if jobs are being distributed to the specified hosts.
+    *   Check the `RootBuildLog.txt` in the ROOT installation directory for any compilation errors.
+
+By following these steps, you can significantly reduce the time it takes to build ROOT within the MEGAlib environment.
